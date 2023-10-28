@@ -41,7 +41,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header, logger=logger):
 
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        #targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [{k: v if k=='lms' else v.to(device) for k, v in t.items()} for t in targets]
 
         with torch.cuda.amp.autocast(enabled=args.amp):
             if need_tgt_for_training:
@@ -159,7 +160,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
 
         # targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        targets = [{k: to_device(v, device) for k, v in t.items()} for t in targets]
+        #targets = [{k: to_device(v, device) for k, v in t.items()} for t in targets]
+        targets = [{k: v if k=='lms' else to_device(v, device) for k, v in t.items()} for t in targets]
 
         with torch.cuda.amp.autocast(enabled=args.amp):
             if need_tgt_for_training:
@@ -324,8 +326,8 @@ def test(model, criterion, postprocessors, data_loader, base_ds, device, output_
         samples = samples.to(device)
 
         # targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        targets = [{k: to_device(v, device) for k, v in t.items()} for t in targets]
-
+        #targets = [{k: to_device(v, device) for k, v in t.items()} for t in targets]
+        targets = [{k: v if k=='lms' else to_device(v, device) for k, v in t.items()} for t in targets]
         outputs = model(samples)
         # loss_dict = criterion(outputs, targets)
         # weight_dict = criterion.weight_dict
@@ -369,3 +371,4 @@ def test(model, criterion, postprocessors, data_loader, base_ds, device, output_
             json.dump(final_res, f)        
 
     return final_res
+
