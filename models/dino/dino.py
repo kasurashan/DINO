@@ -347,7 +347,9 @@ class SetCriterion(nn.Module):
         """
         super().__init__()
         self.num_classes = num_classes
-        self.matcher = matcher
+        self.matcher = matcher[0]
+        self.matcher_reverse = matcher[1] ####### reverse
+        
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
@@ -358,7 +360,12 @@ class SetCriterion(nn.Module):
         """
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
-
+        
+        
+        indices_ = indices
+        if isinstance(indices_, tuple) :
+            indices, indices_reverse = indices ####### reverse
+        
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
@@ -371,8 +378,37 @@ class SetCriterion(nn.Module):
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
-        losses = {'loss_ce': loss_ce}
+        
+        if not isinstance(indices_, tuple) :
+            losses = {'loss_ce': loss_ce}
+        
+        ## reverse
+        if isinstance(indices_, tuple) :
+        
+            idx_reverse = self._get_src_permutation_idx(indices_reverse)
+            target_classes_o_reverse = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices_reverse)])
+            target_classes_reverse = torch.full(src_logits.shape[:2], self.num_classes,
+                                        dtype=torch.int64, device=src_logits.device)
+            target_classes_reverse[idx_reverse] = target_classes_o_reverse
 
+            target_classes_onehot_reverse = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
+                                                dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
+            target_classes_onehot_reverse.scatter_(2, target_classes.unsqueeze(-1), 1)
+
+            # target_classes_onehot_reverse = target_classes_onehot[:,:,:-1]
+            target_classes_onehot_reverse = target_classes_onehot[:,:,:]
+            loss_ce_reverse = sigmoid_focal_loss(src_logits, target_classes_onehot_reverse, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+            
+            lamda = 0.3
+            losses = {'loss_ce': loss_ce-loss_ce_reverse*lamda}
+        ##
+        
+        
+        
+        
+        
+        
+        
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
             losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
@@ -383,6 +419,9 @@ class SetCriterion(nn.Module):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
+        if isinstance(indices, tuple) :
+            indices, indices_reverse = indices################reverse
+        
         pred_logits = outputs['pred_logits']
         device = pred_logits.device
         tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device)
@@ -398,6 +437,8 @@ class SetCriterion(nn.Module):
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_boxes' in outputs
+        if isinstance(indices, tuple) :
+            indices, indices_reverse = indices################reverse
         idx = self._get_src_permutation_idx(indices)
         src_boxes = outputs['pred_boxes'][idx]
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
@@ -425,7 +466,8 @@ class SetCriterion(nn.Module):
            targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
         """
         assert "pred_masks" in outputs
-
+        if isinstance(indices, tuple) :
+            indices, indices_reverse = indices################reverse
         src_idx = self._get_src_permutation_idx(indices)
         tgt_idx = self._get_tgt_permutation_idx(indices)
         src_masks = outputs["pred_masks"]
@@ -451,8 +493,12 @@ class SetCriterion(nn.Module):
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
+        
+
+        
+        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])        
         src_idx = torch.cat([src for (src, _) in indices])
+        
         return batch_idx, src_idx
 
     def _get_tgt_permutation_idx(self, indices):
@@ -484,6 +530,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
         device=next(iter(outputs.values())).device
         indices = self.matcher(outputs_without_aux, targets)
+        indices_reverse = self.matcher_reverse(outputs_without_aux, targets)
 
         if return_indices:
             indices0_copy = indices
@@ -541,12 +588,14 @@ class SetCriterion(nn.Module):
             losses.update(l_dict)
 
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            # losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            losses.update(self.get_loss(loss, outputs, targets, (indices, indices_reverse), num_boxes))  ###reverse
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for idx, aux_outputs in enumerate(outputs['aux_outputs']):
                 indices = self.matcher(aux_outputs, targets)
+                indices_reverse = self.matcher_reverse(aux_outputs, targets)  ######reverse
                 if return_indices:
                     indices_list.append(indices)
                 for loss in self.losses:
@@ -557,7 +606,9 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    # l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    l_dict = self.get_loss(loss, aux_outputs, targets, (indices, indices_reverse), num_boxes, **kwargs) ## reverse
+
                     l_dict = {k + f'_{idx}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -589,6 +640,7 @@ class SetCriterion(nn.Module):
         if 'interm_outputs' in outputs:
             interm_outputs = outputs['interm_outputs']
             indices = self.matcher(interm_outputs, targets)
+            indices_reverse = self.matcher_reverse(interm_outputs, targets)
             if return_indices:
                 indices_list.append(indices)
             for loss in self.losses:
@@ -599,7 +651,8 @@ class SetCriterion(nn.Module):
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs = {'log': False}
-                l_dict = self.get_loss(loss, interm_outputs, targets, indices, num_boxes, **kwargs)
+                # l_dict = self.get_loss(loss, interm_outputs, targets, indices, num_boxes, **kwargs)
+                l_dict = self.get_loss(loss, interm_outputs, targets, (indices, indices_reverse), num_boxes, **kwargs) ###reverse
                 l_dict = {k + f'_interm': v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
@@ -607,6 +660,7 @@ class SetCriterion(nn.Module):
         if 'enc_outputs' in outputs:
             for i, enc_outputs in enumerate(outputs['enc_outputs']):
                 indices = self.matcher(enc_outputs, targets)
+                indices_reverse = self.matcher_reverse(enc_outputs, targets)  ### reverse
                 if return_indices:
                     indices_list.append(indices)
                 for loss in self.losses:
@@ -617,7 +671,8 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, enc_outputs, targets, indices, num_boxes, **kwargs)
+                    # l_dict = self.get_loss(loss, enc_outputs, targets, indices, num_boxes, **kwargs)
+                    l_dict = self.get_loss(loss, enc_outputs, targets, (indices, indices_reverse), num_boxes, **kwargs) # reverse
                     l_dict = {k + f'_enc_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
