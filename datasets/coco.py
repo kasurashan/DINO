@@ -365,7 +365,8 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         if self.aux_target_hacks is not None:
             for hack_runner in self.aux_target_hacks:
                 target, img = hack_runner(target, img=img)
-
+        #target["lms"] = ["small" if i<32**2 else "medium" if i<96**2 else "large" for i in target["area"]]   #####################
+        target["lms"] = ["small" if i<16**2 else "medium" for i in target["area"]]
         return img, target
 
 
@@ -651,3 +652,4 @@ if __name__ == "__main__":
             return_masks=False,
         )
     print('len(dataset_o365):', len(dataset_o365))
+
